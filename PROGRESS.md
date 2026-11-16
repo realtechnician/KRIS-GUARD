@@ -139,3 +139,113 @@ blocked words/topics, action on personal data, "may leave Rwanda"), the price
 table and cost tracking, planted-instruction screening as a replaceable
 module, the optional scan of the answer, rate limiting, timeouts, retries
 with backoff.
+
+---
+
+## Handoff notes for Phases 2 and 3 (design decisions and traps)
+
+Written at the end of the Phase 1 session so the work can continue without
+re-deriving these. Each point is something that is easy to get subtly wrong.
+
+### How Phase 1 is wired (read these first)
+
+- `src/proxy/handler.ts` is the whole request flow, steps numbered 1 to 8.
+  New Phase 2 checks go between step 2 (policy loaded) and step 5 (audit
+  entry). Throw a `GuardError`; `sendError` records and answers it.
+- Every string in a request goes through exactly one of MASK / FREEFORM /
+  CHECK / OPAQUE (`src/pii/walk.ts`). Keep that invariant.
+- `record` in the handler becomes the audit entry. **Never put request text
+  in it.** `test/proxy.test.ts` ("NEVER stores personal data") searches the
+  database, the WAL file and the logs for sample values: extend that test for
+  every new feature.
+- New error kinds: add to `GuardErrorCode` and `STATUS` in `src/errors.ts`.
+- Policy schema is `z.strictObject` (a misspelt key blocks the client). When
+  adding fields, also update `STARTER_POLICY`, the README policy section and
+  `DEFAULT_POLICY` in `test/helpers/gateway.ts`.
+
+### Phase 2
+
+**Policy enforcement**
+- *Allowed models*: check right after the policy loads, before masking.
+  Exact names plus an optional trailing `*`. Empty list should mean "none
+  allowed" (fail closed), not "all allowed".
+- *Max request size*: compare `Buffer.byteLength(parsed.raw)`, not
+  `.length` (characters are not bytes for Kinyarwanda/French text).
+- *Blocked words/topics*: match on the ORIGINAL text, before masking, with
+  the same word-folding as `src/pii/detectors/names.ts` (reuse
+  `createNameDetector` on the word list: it already does case, accents and
+  whole-word matching). Record the index of the rule that matched, never the
+  surrounding text.
+- *Action on personal data* (`hide` / `block` / `allow`): give `Masker` a
+  mode. `block` = `find()` and throw if anything is found. `allow` = count
+  the kinds for the audit log but return the text unchanged; in this mode
+  `checkOnly` must not block.
+- *May leave Rwanda = false*: block when (a) action is `allow` and anything
+  was found, or (b) the request has attachments (they cannot be checked), or
+  (c) residual detection fires. In `hide` mode `Masker.mask` already
+  re-checks its own output, so (c) is in place.
+
+**Cost and spending limits**
+- Keep money as whole numbers (micro-dollars). Floating-point sums drift.
+- Price table `config/prices.yaml`: per model, per million tokens: input,
+  output, cache read, cache write. `Usage` in `src/proxy/adapter.ts` already
+  carries all four counts.
+- A model with no price while a spending limit is set: block (fail closed).
+- Do NOT compute monthly spend by scanning audit JSON on each request. Add a
+  small `usage` table (client_id, month, cost, tokens) updated in `finish()`.
+  The audit log stays the record; the table is the fast counter. A test
+  should confirm the two agree.
+- Check the limit before forwarding. Several simultaneous requests can
+  overshoot slightly; this is documented in THREAT_MODEL.md section 6.
+- A stream that breaks half-way: Anthropic reports input tokens in
+  `message_start`, so partial cost is known. OpenAI reports usage only in the
+  last event, so a broken OpenAI stream has unknown cost: record it as
+  unknown and flag it, do not record zero.
+- `handler.ts` writes `cost_usd: null` today; fill it in `finish()`.
+
+**Planted-instruction screening** (started: see `src/injection/`)
+- Untrusted text = tool results, text documents, search results, provider
+  tool results, OpenAI `role: "tool"` messages. Optionally user messages.
+  The system prompt and tool definitions are the client developer's own.
+- Screen BEFORE masking (rules need the real words), strip before masking.
+- Log and audit rule ids and counts only. The matched text may be personal data.
+- The "strip" marker must not itself trigger a detector.
+
+**Scan of the answer for new personal data**
+- Run `masker.find()` on the answer BEFORE restoring. Request data appears
+  there only as placeholders, so anything detected is new by construction.
+- Streaming: collect each block's un-restored text (cap the size), scan at
+  the end. It can only be flagged, not taken back.
+
+**Rate limits, timeouts, retries**
+- Token bucket per key id, in memory. Also limit failed-key attempts per IP
+  in the `onRequest` hook in `src/server.ts`. Behind a reverse proxy the IP
+  is only right if Fastify's `trustProxy` is set: make it a setting.
+- Retry only when NOTHING has been sent to the client yet, only on
+  connection errors and 429/500/502/503/529, honour `retry-after` (capped),
+  and stop at an overall deadline. Never retry once a stream has started.
+- Provider error bodies are currently passed through unchanged (they contain
+  placeholders at most). Requirement 10 may want them mapped to generic text.
+
+### Phase 3
+
+- Serve the admin page from a SECOND Fastify instance on its own port, bound
+  to 127.0.0.1 by default, so it shares no routes with the proxy.
+- Password: HMAC it with `deriveKey(secret, "admin-password")`, THEN scrypt
+  (N=2^17, r=8, p=1) with a random salt. The HMAC step is what stops someone
+  with database write access from swapping in a hash they made themselves.
+- Sessions: 32 random bytes in a cookie (`HttpOnly`, `SameSite=Strict`,
+  `Secure`, `__Host-` prefix); store only an HMAC of it. Idle and absolute expiry.
+- CSRF: a per-session token in every form, plus an `Origin` header check.
+- Login limits: per IP and per username, with growing delays.
+- Every admin action: `audit.append("admin", { action, actor: username })`.
+  `ClientService` methods already take an `actor`.
+- HTML: escape every value; send a strict Content-Security-Policy
+  (`default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'`).
+  Client names are attacker-influenced text.
+- First admin is created by the command-line tool, never a default password.
+- "Recent blocks": audit rows store details as JSON text. Either filter in
+  code over the last N rows, or add indexed columns. Do not use SQL `LIKE`
+  on the JSON for anything a client can influence.
+- `/health` should check the database answers and report the audit head
+  number, without revealing versions or paths to unauthenticated callers.
