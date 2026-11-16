@@ -19,6 +19,7 @@ import {
   maskFreeform,
   maskText,
   restoreDeep,
+  untrusted,
   walkFields,
   type WalkContext,
 } from "../pii/walk.js";
@@ -67,7 +68,8 @@ function sanitizeBlock(ctx: WalkContext, block: unknown, path: string): unknown 
   }
 
   if (type === "tool_result" || type === "mcp_tool_result") {
-    return walkFields(ctx, block, path, { content, cache_control: keep });
+    // What a tool returned came from outside (a web page, an email, a database): untrusted.
+    return untrusted(ctx, () => walkFields(ctx, block, path, { content, cache_control: keep }));
   }
 
   if (type === "image" || type === "container_upload" || type === "file") {
@@ -87,16 +89,20 @@ function sanitizeBlock(ctx: WalkContext, block: unknown, path: string): unknown 
       sourceHandler = (v, p) =>
         isObject(v) ? walkFields(ctx, v, p, { data: mask(ctx), content }) : maskFreeform(ctx, v, p);
     }
-    return walkFields(ctx, block, path, {
-      source: sourceHandler,
-      title: mask(ctx),
-      context: mask(ctx),
-      cache_control: keep,
-    });
+    return untrusted(ctx, () =>
+      walkFields(ctx, block, path, {
+        source: sourceHandler,
+        title: mask(ctx),
+        context: mask(ctx),
+        cache_control: keep,
+      }),
+    );
   }
 
   if (type === "search_result") {
-    return walkFields(ctx, block, path, { source: mask(ctx), title: mask(ctx), content, cache_control: keep });
+    return untrusted(ctx, () =>
+      walkFields(ctx, block, path, { source: mask(ctx), title: mask(ctx), content, cache_control: keep }),
+    );
   }
 
   if (type === "compaction") {
@@ -106,19 +112,22 @@ function sanitizeBlock(ctx: WalkContext, block: unknown, path: string): unknown 
   // Anything else (web search results, code execution results, and block
   // types that did not exist when this was written): mask every string we
   // find, check the identifying fields, and look for nested blocks.
-  return walkFields(
-    ctx,
-    block,
-    path,
-    {
-      type: check(ctx),
-      id: check(ctx),
-      tool_use_id: check(ctx),
-      name: check(ctx),
-      cache_control: keep,
-      content: (v, p) => sanitizeUnknown(ctx, v, p),
-    },
-    "freeform",
+  // Results of provider-run tools (web pages!) are untrusted as well.
+  return untrusted(ctx, () =>
+    walkFields(
+      ctx,
+      block,
+      path,
+      {
+        type: check(ctx),
+        id: check(ctx),
+        tool_use_id: check(ctx),
+        name: check(ctx),
+        cache_control: keep,
+        content: (v, p) => sanitizeUnknown(ctx, v, p),
+      },
+      "freeform",
+    ),
   );
 }
 
@@ -136,7 +145,8 @@ function sanitizeMessages(ctx: WalkContext, value: unknown, path: string): unkno
   return value.map((m, i) => {
     const p = `${path}[${i}]`;
     if (!isObject(m)) throw new GuardError("invalid_request", `KRIS Guard: ${p} must be an object.`);
-    return walkFields(ctx, m, p, { content: (v, cp) => sanitizeContent(ctx, v, cp) });
+    const walk = () => walkFields(ctx, m, p, { content: (v, cp) => sanitizeContent(ctx, v, cp) });
+    return ctx.screenUserMessages && m.role === "user" ? untrusted(ctx, walk) : walk();
   });
 }
 

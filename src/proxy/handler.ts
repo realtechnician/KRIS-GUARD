@@ -22,6 +22,8 @@ import type { AuthenticatedClient, ClientService } from "../clients/service.js";
 import type { Config } from "../config.js";
 import { deriveKey, hmacBytes, hmacHex, randomHex } from "../crypto.js";
 import { GuardError, describeErrorSafely, failClosedError } from "../errors.js";
+import { screenText, summarizeFindings, type InjectionDetector, type InjectionFinding } from "../injection/detector.js";
+import { RuleBasedInjectionDetector } from "../injection/rules.js";
 import { BUILT_IN_DETECTORS } from "../pii/detect.js";
 import { Masker } from "../pii/masker.js";
 import { countPlaceholders, type PlaceholderMode } from "../pii/placeholders.js";
@@ -39,6 +41,8 @@ export interface ProxyDeps {
   log: FastifyBaseLogger;
   /** Extra detectors. Used by tests (for example, one that always fails). */
   extraDetectors?: readonly Detector[];
+  /** The planted-instruction detector. Replace this to plug in a better one. */
+  injectionDetector?: InjectionDetector;
 }
 
 /** What the JSON body parser in server.ts hands us: the parsed data and the original text. */
@@ -126,6 +130,7 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
   const { config, audit, log } = deps;
   const stableKeyRoot = deriveKey(config.serverSecret, "stable-placeholders");
   const userLabelKey = deriveKey(config.serverSecret, "user-label");
+  const injectionDetector = deps.injectionDetector ?? new RuleBasedInjectionDetector();
 
   return async function handle(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const started = request.krisStarted ?? performance.now();
@@ -210,6 +215,18 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
         throw new GuardError("invalid_request", "KRIS Guard: `model` is required.");
       }
 
+      // Planted-instruction screening runs on untrusted text, before masking.
+      const injectionAction = policy.injection_screening.action;
+      const injectionFindings: InjectionFinding[] = [];
+      if (injectionAction !== "off") {
+        ctx.screenUserMessages = policy.injection_screening.scan_user_messages;
+        ctx.screen = (text) => {
+          const result = screenText(injectionDetector, injectionAction, text);
+          for (const f of result.findings) injectionFindings.push(f);
+          return result.text;
+        };
+      }
+
       const safeBody = adapter.prepare(adapter.sanitize(body, ctx));
       record.pii_hidden = { ...masker.hidden };
       record.attachments = ctx.attachments.length;
@@ -229,6 +246,22 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
         decisions.push("attachments_allowed_unchecked");
       }
       if (Object.keys(masker.hidden).length > 0) decisions.push("personal_data_hidden");
+
+      // ── 4b. Planted instructions ─────────────────────────────────────────
+      const warnings: string[] = [];
+      if (injectionFindings.length > 0) {
+        // Rule names and counts only. The matched text is never recorded.
+        record.injection = { action: injectionAction, detector: injectionDetector.name, rules: summarizeFindings(injectionFindings) };
+        if (injectionAction === "block") {
+          throw new GuardError(
+            "injection_blocked",
+            "KRIS Guard blocked this request: text from a document, web page or tool result looks like an instruction " +
+              "planted for the AI. If this is a mistake, ask the KRIS administrator to review the client's screening setting.",
+          );
+        }
+        decisions.push(injectionAction === "strip" ? "planted_instruction_stripped" : "planted_instruction_warning");
+        warnings.push(injectionAction === "strip" ? "planted-instruction-stripped" : "possible-planted-instruction");
+      }
       record.policy_decisions = decisions;
 
       const providerKey = adapter.providerKey(config);
@@ -306,6 +339,8 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
       const upstreamRequestId = upstream.headers.get("request-id") ?? upstream.headers.get("x-request-id");
       if (upstreamRequestId) reply.header("x-upstream-request-id", upstreamRequestId.slice(0, 200));
       reply.header("x-kris-request-id", requestId);
+      // Lets the client app know something was flagged, so it can warn its user.
+      if (warnings.length > 0) reply.header("x-kris-guard-warnings", warnings.join(","));
 
       // ── 7a. The provider refused or failed ────────────────────────────────
       if (!upstream.ok) {
@@ -339,6 +374,7 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
           "x-accel-buffering": "no",
           "x-kris-request-id": requestId,
           "x-kris-guard-overhead-ms": overheadMs.toFixed(1),
+          ...(warnings.length > 0 ? { "x-kris-guard-warnings": warnings.join(",") } : {}),
         });
 
         const parser = new SseParser();

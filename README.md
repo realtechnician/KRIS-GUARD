@@ -18,11 +18,12 @@ that cannot be changed quietly.
   0788 123 456"          write audit entry
 ```
 
-> **Status: Phase 1 of 3.** See [PROGRESS.md](PROGRESS.md) for what is built
-> and what is not yet. In short: the proxy, personal-data protection and audit
-> log work today. Spending limits, model allow-lists, planted-instruction
-> screening, rate limiting (Phase 2) and the admin page (Phase 3) do not exist
-> yet. **Until Phase 2, do not expose KRIS Guard to the open internet.**
+> **Status: Phase 1 done; Phase 2 partly done.** See [PROGRESS.md](PROGRESS.md)
+> for what is built and what is not yet. In short: the proxy, personal-data
+> protection, audit log and planted-instruction screening work today.
+> Spending limits, model allow-lists, rate limiting (rest of Phase 2) and the
+> admin page (Phase 3) do not exist yet. **Until Phase 2 is finished, do not
+> expose KRIS Guard to the open internet.**
 
 Read [THREAT_MODEL.md](THREAT_MODEL.md) for what it defends against and why.
 
@@ -204,7 +205,19 @@ personal_data:
     - Uwase
   # random (default) or stable. See "Honest limits".
   placeholders: random
+
+injection_screening:
+  # Text from documents, emails, web pages and tool results is checked for
+  # instructions planted for the AI ("ignore your instructions and ...").
+  # off | warn (default) | strip | block
+  action: warn
+  # Also check what the user typed. Usually false.
+  scan_user_messages: false
 ```
+
+With `warn` or `strip`, a flagged request still goes through, and the answer
+carries the header `x-kris-guard-warnings` so the app can alert its user.
+The audit log records which rules matched, never the text.
 
 If the file is missing or has a mistake (even a misspelt setting), that
 client's requests are **blocked** until it is fixed. To see what is wrong:
@@ -265,6 +278,7 @@ them. The `code` tells you why:
 |---|---|
 | `kris_guard_unauthorized` | Missing, wrong or revoked key |
 | `kris_guard_attachment_blocked` | The request contains an image, file or PDF and the policy does not allow them |
+| `kris_guard_injection_blocked` | Text from a document or tool result looks like a planted instruction, and the policy says block |
 | `kris_guard_unmaskable_personal_data` | Personal data in a field that cannot be replaced (a tool name, a model name, an id) |
 | `kris_guard_policy_unavailable` | The client's policy file is missing or invalid |
 | `kris_guard_check_failed` | A safety check itself failed; the request was blocked to be safe |
@@ -359,8 +373,12 @@ answer) but the AI cannot read that value while answering.
   checkpoint cannot be proven missing.
 - Someone who fully controls the server can read data in memory and the
   secrets. KRIS Guard cannot defend against that.
-- Phase 1 has **no** rate limiting, spending limits, model allow-list or
-  planted-instruction screening. Those arrive in Phase 2.
+- **Planted-instruction screening is rule-based** and catches known, obvious
+  wording in English and French. The Kinyarwanda phrases are marked [VERIFY].
+  A careful attacker, another language, or an instruction split across
+  several documents will get through. It reduces risk; it does not remove it.
+- There is still **no** rate limiting, spending limit or model allow-list.
+  Those are the rest of Phase 2.
 
 ---
 
@@ -408,6 +426,7 @@ src/
   server.ts       web server, routes, safe error answers
   proxy/          the request flow (handler.ts) and one adapter per provider
   pii/            detectors, placeholders, masking, streamed restoring
+  injection/      planted-instruction screening (replaceable detector)
   audit/          the chained, signed log; checkpoints; export
   clients/        clients and API keys
   policy/         per-client policy files

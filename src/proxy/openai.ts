@@ -24,6 +24,7 @@ import {
   maskFreeform,
   maskText,
   setOwn,
+  untrusted,
   walkFields,
   type WalkContext,
 } from "../pii/walk.js";
@@ -87,12 +88,16 @@ function sanitizeMessages(ctx: WalkContext, value: unknown, path: string): unkno
   return value.map((m, i) => {
     const p = `${path}[${i}]`;
     if (!isObject(m)) throw new GuardError("invalid_request", `KRIS Guard: ${p} must be an object.`);
-    return walkFields(ctx, m, p, {
-      content: (v, cp) => sanitizeContent(ctx, v, cp),
-      refusal: mask(ctx),
-      tool_calls: (v, tp) => sanitizeToolCalls(ctx, v, tp),
-      function_call: (v, fp) => sanitizeFunctionCall(ctx, v, fp),
-    });
+    const walk = () =>
+      walkFields(ctx, m, p, {
+        content: (v, cp) => sanitizeContent(ctx, v, cp),
+        refusal: mask(ctx),
+        tool_calls: (v, tp) => sanitizeToolCalls(ctx, v, tp),
+        function_call: (v, fp) => sanitizeFunctionCall(ctx, v, fp),
+      });
+    // What a tool returned came from outside: untrusted. User text only if the client chose so.
+    const outside = m.role === "tool" || m.role === "function" || (ctx.screenUserMessages === true && m.role === "user");
+    return outside ? untrusted(ctx, walk) : walk();
   });
 }
 

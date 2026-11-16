@@ -33,6 +33,30 @@ export interface Attachment {
 export interface WalkContext {
   masker: Masker;
   attachments: Attachment[];
+  /**
+   * Planted-instruction screening (see src/injection/). Called on every
+   * piece of UNTRUSTED text before it is masked; returns the text to use.
+   * Absent means screening is off.
+   */
+  screen?: (text: string) => string;
+  /** Above zero while walking text that came from outside: tool results, documents, search results. */
+  untrustedDepth?: number;
+  /** Also treat what the user typed as untrusted (a per-client choice). */
+  screenUserMessages?: boolean;
+}
+
+/** Run `fn` with everything it walks marked as untrusted text. */
+export function untrusted<T>(ctx: WalkContext, fn: () => T): T {
+  ctx.untrustedDepth = (ctx.untrustedDepth ?? 0) + 1;
+  try {
+    return fn();
+  } finally {
+    ctx.untrustedDepth -= 1;
+  }
+}
+
+function screened(ctx: WalkContext, text: string): string {
+  return ctx.screen && (ctx.untrustedDepth ?? 0) > 0 ? ctx.screen(text) : text;
 }
 
 const MAX_DEPTH = 100;
@@ -96,7 +120,7 @@ function numberNeedsCheck(n: number): boolean {
 
 /** MASK: hide personal data in one text. */
 export function maskText(ctx: WalkContext, value: unknown, path: string): unknown {
-  if (typeof value === "string") return ctx.masker.mask(value);
+  if (typeof value === "string") return ctx.masker.mask(screened(ctx, value));
   // Not a string where a string was expected: fall back to the safest generic handling.
   return maskFreeform(ctx, value, path, 0);
 }
@@ -109,7 +133,7 @@ export function maskFreeform(ctx: WalkContext, value: unknown, path: string, dep
       ctx.attachments.push({ path, kind: "embedded file data" });
       return value;
     }
-    return ctx.masker.mask(value);
+    return ctx.masker.mask(screened(ctx, value));
   }
   if (typeof value === "number") {
     if (!numberNeedsCheck(value)) return value;

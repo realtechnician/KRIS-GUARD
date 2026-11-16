@@ -16,6 +16,7 @@ export type GuardErrorCode =
   | "policy_unavailable"
   | "attachment_blocked"
   | "unmaskable_personal_data"
+  | "injection_blocked"
   | "check_failed"
   | "audit_unavailable"
   | "provider_not_configured"
@@ -29,6 +30,7 @@ const STATUS: Record<GuardErrorCode, number> = {
   policy_unavailable: 403,
   attachment_blocked: 403,
   unmaskable_personal_data: 403,
+  injection_blocked: 403,
   check_failed: 500,
   audit_unavailable: 500,
   provider_not_configured: 503,

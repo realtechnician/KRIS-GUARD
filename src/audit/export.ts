@@ -15,6 +15,7 @@ const DATA_COLUMNS = [
   "decision",
   "reason",
   "pii_hidden",
+  "injection",
   "attachments",
   "status",
   "input_tokens",

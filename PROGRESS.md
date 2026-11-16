@@ -4,7 +4,7 @@
 |---|---|
 | Step 0: threat model and plan | Done |
 | **Phase 1: core proxy, personal-data protection, audit log** | **Done, waiting for your OK** |
-| Phase 2: client policies, planted-instruction screening, cost, rate limits | Not started |
+| Phase 2: client policies, planted-instruction screening, cost, rate limits | **Partly done**: screening (item 9, first half) is built and tested. Everything else is not started. |
 | Phase 3: admin page, `/health` report, LEARN.md | Not started |
 
 ---
@@ -34,9 +34,9 @@
 
 ### Tests
 
-`npm test`: **162 passing**, all offline against a fake provider. 2 more
-(PostgreSQL) are skipped unless a PostgreSQL server is supplied; they pass
-when one is.
+`npm test`: **244 passing** (162 at the end of Phase 1, plus 82 for the
+screening module), all offline against a fake provider. 2 more (PostgreSQL)
+are skipped unless a PostgreSQL server is supplied; they pass when one is.
 
 | Your test requirement | Test file | Result |
 |---|---|---|
@@ -139,6 +139,37 @@ blocked words/topics, action on personal data, "may leave Rwanda"), the price
 table and cost tracking, planted-instruction screening as a replaceable
 module, the optional scan of the answer, rate limiting, timeouts, retries
 with backoff.
+
+---
+
+## Phase 2 so far
+
+Done at the end of the Phase 1 session, at your request to use the remaining
+time on the hardest part. **Phase 2 is NOT complete; do not treat it as a
+finished phase.**
+
+| # | Requirement | Status |
+|---|---|---|
+| 9 | Planted-instruction screening, rule-based, replaceable module | Done: `src/injection/detector.ts` (the interface and warn/strip/block), `src/injection/rules.ts` (the rules) |
+| 9 | Per client: warn, strip or block | Done: `injection_screening` in the policy file; default `warn` |
+| 9 | Applied to documents, emails, web pages, tool results | Done: marked in `src/proxy/anthropic.ts` and `openai.ts` with `untrusted(...)` |
+| 9 | Optional scan of the answer for new personal data | **Not started** |
+| 7 | Allowed models, spending limit, max size, blocked words, action on personal data, attachments, "may leave Rwanda" | Attachments only (Phase 1). **The rest not started** |
+| 8 | Price table and cost | **Not started** |
+| 10 | Rate limiting, timeouts, retries, error wording | A provider timeout exists (Phase 1). **The rest not started** |
+
+Tests: `test/injection.test.ts` (30 attack examples caught, 25 ordinary
+business sentences not flagged, the three actions, speed on hostile input)
+and `test/injection-proxy.test.ts` (end to end, both APIs, which text is and
+is not screened, nothing sensitive recorded, a crashing detector blocks).
+
+Things to know:
+- The Kinyarwanda rule is marked [VERIFY]; I am not confident of the wording.
+- The default is `warn`, so existing clients keep working and get flagged.
+- The system prompt and tool definitions are never screened (the client's
+  developers wrote them). What the user typed is screened only if the policy
+  sets `scan_user_messages: true`.
+- In-memory detector swap: pass `injectionDetector` to `buildApp`.
 
 ---
 

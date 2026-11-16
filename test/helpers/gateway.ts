@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { loadConfig, type Config } from "../../src/config.js";
+import type { InjectionDetector } from "../../src/injection/detector.js";
 import type { Detector } from "../../src/pii/types.js";
 import { buildApp } from "../../src/server.js";
 import { createServices, type Services } from "../../src/services.js";
@@ -44,7 +45,12 @@ personal_data:
 `;
 
 export async function startGateway(
-  options: { extraDetectors?: Detector[]; env?: Record<string, string>; databaseUrl?: string } = {},
+  options: {
+    extraDetectors?: Detector[];
+    injectionDetector?: InjectionDetector;
+    env?: Record<string, string>;
+    databaseUrl?: string;
+  } = {},
 ): Promise<TestGateway> {
   const provider = await startFakeProvider();
   const dir = await mkdtemp(join(tmpdir(), "kris-guard-test-"));
@@ -72,6 +78,7 @@ export async function startGateway(
     ...services,
     logStream: { write: (msg: string) => void logs.push(msg) },
     ...(options.extraDetectors ? { extraDetectors: options.extraDetectors } : {}),
+    ...(options.injectionDetector ? { injectionDetector: options.injectionDetector } : {}),
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;

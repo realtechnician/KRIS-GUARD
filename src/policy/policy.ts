@@ -40,6 +40,20 @@ const PolicySchema = z.strictObject({
       placeholders: z.enum(["random", "stable"]).default("random"),
     })
     .default({ names: [], placeholders: "random" }),
+
+  injection_screening: z
+    .strictObject({
+      /**
+       * What to do when text from a document, email, web page or tool result
+       * looks like an instruction planted for the AI:
+       *   off   do not look      warn  forward, but flag it (default)
+       *   strip remove the suspicious sentence      block refuse the request
+       */
+      action: z.enum(["off", "warn", "strip", "block"]).default("warn"),
+      /** Also screen what the user typed. Off by default: users legitimately give instructions. */
+      scan_user_messages: z.boolean().default(false),
+    })
+    .default({ action: "warn", scan_user_messages: false }),
 });
 
 export type Policy = z.infer<typeof PolicySchema>;
@@ -76,6 +90,18 @@ personal_data:
   #         Needed for the provider's prompt caching and for multi-turn
   #         conversations that use "thinking". See README, "Honest limits".
   placeholders: random
+
+injection_screening:
+  # Text from documents, emails, web pages and tool results is checked for
+  # instructions planted for the AI ("ignore your instructions and ...").
+  #   off   : do not check
+  #   warn  : forward the request, but flag it in the audit log (default)
+  #   strip : remove the suspicious sentence, then forward
+  #   block : refuse the request
+  # This catches obvious wording only. It is not a guarantee.
+  action: warn
+  # Also check what the user typed. Usually false: users give instructions.
+  scan_user_messages: false
 `;
 
 export class PolicyStore {

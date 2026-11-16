@@ -11,6 +11,7 @@ import type { ClientService } from "./clients/service.js";
 import type { Config } from "./config.js";
 import { randomHex } from "./crypto.js";
 import { GuardError, describeErrorSafely, failClosedError } from "./errors.js";
+import type { InjectionDetector } from "./injection/detector.js";
 import type { Detector } from "./pii/types.js";
 import type { PolicyStore } from "./policy/policy.js";
 import type { ApiAdapter } from "./proxy/adapter.js";
@@ -25,6 +26,8 @@ export interface AppDeps {
   policies: PolicyStore;
   /** Tests only. */
   extraDetectors?: readonly Detector[];
+  /** Plug in a different planted-instruction detector. Default: the built-in rules. */
+  injectionDetector?: InjectionDetector;
   /** Tests can pass their own log destination to check nothing personal is logged. */
   logStream?: { write(msg: string): void };
 }
@@ -103,6 +106,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       policies: deps.policies,
       log: app.log,
       ...(deps.extraDetectors ? { extraDetectors: deps.extraDetectors } : {}),
+      ...(deps.injectionDetector ? { injectionDetector: deps.injectionDetector } : {}),
     });
 
     app.post(
