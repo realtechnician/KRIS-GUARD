@@ -6,3 +6,13 @@ data/
 *.db-wal
 *.db-shm
 coverage/
+
+# Client policy files contain lists of real people's names. Never commit them.
+# (The folder itself is kept, via .gitkeep.)
+config/policies/*.yaml
+config/policies/*.yml
+
+# Audit exports and checkpoint copies made while following the README.
+audit.csv
+audit.json
+checkpoint-backup/
