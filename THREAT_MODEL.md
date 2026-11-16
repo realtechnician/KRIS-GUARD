@@ -183,7 +183,8 @@ elsewhere each day matters.
 | Client identity taken only from the key | Client isolation | Curious client |
 | Personal data detection on every text field, including tool calls and results | Personal data | The provider seeing it; client apps forgetting a field |
 | Unknown fields are scanned too, not skipped | Personal data | New API features we have not seen yet |
-| Random per-request placeholders, map in memory only | Personal data | Database access, log readers, the provider, cross-request leaks |
+| Random per-request placeholders (default), map in memory only | Personal data | Database access, log readers, the provider, cross-request leaks |
+| Optional "stable" placeholders, keyed per client | Compatibility with the provider's caching and "thinking" | A deliberate trade-off: see section 6 |
 | Never guess when a placeholder comes back damaged | Personal data | Putting the wrong person's data in an answer |
 | Attachments blocked by default | Personal data | Data hidden where we cannot look |
 | Fail closed | Everything | Bugs, strange inputs, deliberate attempts to break the checker |
@@ -259,6 +260,21 @@ Being clear about these is part of being safe.
   Running several copies side by side would need a shared counter (not built).
 - If the AI rewrites a placeholder (changes a letter, translates it), that value
   stays hidden in the answer. Safe, but the user sees a placeholder.
+- **Random placeholders and long conversations.** With the default (a fresh
+  random placeholder per request), the earlier messages of a conversation look
+  different to the provider on every turn. Current Anthropic models require
+  earlier messages to be unchanged when the AI's "thinking" blocks are sent
+  back, and their prompt cache only works on unchanged text. So with random
+  placeholders, such conversations can be rejected by the provider, and
+  caching saves less. The per-client "stable" setting solves this by giving
+  the same value the same placeholder every time. What that costs: the
+  provider can tell that two requests mention the same hidden value (though
+  still not what it is), and anyone holding both the server secret and a
+  guessed value could confirm the guess. Stable placeholders are computed
+  with a secret key that is different for every client, so they reveal
+  nothing across clients.
+- The AI's "thinking" text is never restored. It carries the provider's
+  signature, and changing it would make the provider reject it later.
 
 ---
 
@@ -292,3 +308,14 @@ Being clear about these is part of being safe.
   provider abroad.
 - HTTPS in front of KRIS Guard is in place before any real data is sent.
 - The daily checkpoint file is actually being copied off the server.
+
+---
+
+## 9. Changes since the first version of this document
+
+- **Added the "stable" placeholder option** (Phase 1). Research during the
+  build showed that purely random placeholders conflict with how current
+  Anthropic models check conversation history. Random remains the default.
+- **Two audit entries per request** (one before forwarding, one after), so a
+  crash in the middle still leaves a record that data was sent.
+
