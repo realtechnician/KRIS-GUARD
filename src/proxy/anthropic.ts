@@ -23,7 +23,15 @@ import {
   walkFields,
   type WalkContext,
 } from "../pii/walk.js";
-import { NO_USAGE, firstHeader, num, type ApiAdapter, type StreamTransformer, type Usage } from "./adapter.js";
+import {
+  MAX_COLLECTED_ANSWER,
+  NO_USAGE,
+  firstHeader,
+  num,
+  type ApiAdapter,
+  type StreamTransformer,
+  type Usage,
+} from "./adapter.js";
 import type { SseEvent } from "./sse.js";
 
 const DEFAULT_API_VERSION = "2023-06-01";
@@ -198,13 +206,25 @@ class AnthropicStream implements StreamTransformer {
   private readonly restorers = new Map<number, { restorer: StreamRestorer; field: "text" | "partial_json" }>();
   private readonly placeholders: string[];
   private current: Usage = NO_USAGE;
+  private collected = "";
 
-  constructor(private readonly masker: Masker) {
+  constructor(
+    private readonly masker: Masker,
+    private readonly collectAnswer: boolean,
+  ) {
     this.placeholders = masker.map.placeholders();
   }
 
   usage(): Usage {
     return this.current;
+  }
+
+  collectedText(): string {
+    return this.collected;
+  }
+
+  private collect(piece: string): void {
+    if (this.collectAnswer && this.collected.length < MAX_COLLECTED_ANSWER) this.collected += piece;
   }
 
   transform(ev: SseEvent): SseEvent[] {
@@ -261,6 +281,7 @@ class AnthropicStream implements StreamTransformer {
           }
           const piece = delta[field];
           if (typeof piece !== "string") return [ev];
+          this.collect(piece);
           const restored = entry.restorer.push(piece);
           // Everything was held back (it might be half a placeholder): send nothing yet.
           if (restored === "" && piece !== "") return [];
@@ -279,6 +300,7 @@ class AnthropicStream implements StreamTransformer {
         const index = num(data.index) ?? -1;
         const entry = this.restorers.get(index);
         this.restorers.delete(index);
+        this.collect("\n"); // keep blocks apart so two numbers cannot run together
         const out: SseEvent[] = [];
         const rest = entry?.restorer.flush() ?? "";
         if (rest !== "") out.push(this.deltaEvent(index, entry!.field, rest));
@@ -352,7 +374,18 @@ export const anthropicAdapter: ApiAdapter = {
 
   usageFromResponse: (json) => (isObject(json) ? readUsage(json.usage, NO_USAGE) : NO_USAGE),
 
-  createStreamTransformer: (masker) => new AnthropicStream(masker),
+  answerTexts(json) {
+    const out: string[] = [];
+    if (!isObject(json) || !Array.isArray(json.content)) return out;
+    for (const block of json.content) {
+      if (!isObject(block) || isThinking(block)) continue;
+      if (typeof block.text === "string") out.push(block.text);
+      if (block.input !== undefined) out.push(JSON.stringify(block.input));
+    }
+    return out;
+  },
+
+  createStreamTransformer: (masker, _body, collectAnswer) => new AnthropicStream(masker, collectAnswer),
 
   errorBody: (err, requestId) => ({
     type: "error",

@@ -316,6 +316,19 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
       }
       let overheadMs = beforeForward - started;
 
+      /**
+       * Optional: which kinds of personal data appear in the answer that were
+       * NOT in the request. The answer is scanned BEFORE restoring: at that
+       * point everything from the request is still a placeholder, so anything
+       * a detector finds is new by construction. Only the KINDS are returned.
+       */
+      const scanAnswers = policy.personal_data.scan_answers;
+      const newPiiIn = (texts: readonly string[]): string[] => {
+        const kinds = new Set<string>();
+        for (const t of texts) for (const k of masker.find(t)) kinds.add(k);
+        return [...kinds].sort();
+      };
+
       const finish = async (status: number | string, usage: Usage, extra: Record<string, unknown> = {}) => {
         clearTimeout(timer);
         try {
@@ -378,7 +391,7 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
         });
 
         const parser = new SseParser();
-        const transformer = adapter.createStreamTransformer(masker, body);
+        const transformer = adapter.createStreamTransformer(masker, body, scanAnswers);
         const decoder = new TextDecoder();
         let unrestored = 0;
         const emit = async (events: ReturnType<SseParser["push"]>) => {
@@ -408,7 +421,12 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
             : new GuardError("provider_unreachable", "KRIS Guard: the connection to the AI provider was interrupted.");
         }
         if (!res.writableEnded) res.end();
-        await finish(200, transformer.usage(), unrestored > 0 ? { unrestored_placeholders: unrestored } : {});
+        // A streamed answer has already been sent, so new personal data can only be recorded, not announced.
+        const streamedNew = scanAnswers ? newPiiIn([transformer.collectedText()]) : [];
+        await finish(200, transformer.usage(), {
+          ...(unrestored > 0 ? { unrestored_placeholders: unrestored } : {}),
+          ...(streamedNew.length > 0 ? { answer_new_pii: streamedNew } : {}),
+        });
         return;
       }
 
@@ -428,13 +446,21 @@ export function createProxyHandler(adapter: ApiAdapter, deps: ProxyDeps) {
       } catch {
         throw new GuardError("provider_unreachable", "KRIS Guard: the AI provider's answer was not valid JSON.");
       }
+      const answerNew = scanAnswers ? newPiiIn(adapter.answerTexts(json)) : [];
+      if (answerNew.length > 0) {
+        warnings.push("new-personal-data-in-answer");
+        reply.header("x-kris-guard-warnings", warnings.join(","));
+      }
       const restored = JSON.stringify(adapter.restoreResponse(json, masker));
       const unrestored = countPlaceholders(restored);
       overheadMs += performance.now() - afterBody;
 
       reply.header("x-kris-guard-overhead-ms", overheadMs.toFixed(1));
       await reply.code(200).header("content-type", "application/json; charset=utf-8").send(restored);
-      await finish(200, adapter.usageFromResponse(json), unrestored > 0 ? { unrestored_placeholders: unrestored } : {});
+      await finish(200, adapter.usageFromResponse(json), {
+        ...(unrestored > 0 ? { unrestored_placeholders: unrestored } : {}),
+        ...(answerNew.length > 0 ? { answer_new_pii: answerNew } : {}),
+      });
     } catch (err) {
       await sendError(err);
     }

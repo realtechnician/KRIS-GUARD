@@ -38,8 +38,13 @@ const PolicySchema = z.strictObject({
       names: z.array(z.string().min(1).max(200)).max(MAX_NAMES).default([]),
       /** "random" (default) or "stable". See src/pii/placeholders.ts. */
       placeholders: z.enum(["random", "stable"]).default("random"),
+      /**
+       * Also look at the AI's ANSWER for personal data that was not in the
+       * request (invented, or leaked from somewhere else), and flag it.
+       */
+      scan_answers: z.boolean().default(false),
     })
-    .default({ names: [], placeholders: "random" }),
+    .default({ names: [], placeholders: "random", scan_answers: false }),
 
   injection_screening: z
     .strictObject({
@@ -90,6 +95,11 @@ personal_data:
   #         Needed for the provider's prompt caching and for multi-turn
   #         conversations that use "thinking". See README, "Honest limits".
   placeholders: random
+
+  # Also check the AI's ANSWER for personal data that was not in the request
+  # (made up, or leaked from elsewhere). It is flagged in the audit log and
+  # in a response header; the answer itself is not changed.
+  scan_answers: false
 
 injection_screening:
   # Text from documents, emails, web pages and tool results is checked for

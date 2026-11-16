@@ -28,7 +28,7 @@ import {
   walkFields,
   type WalkContext,
 } from "../pii/walk.js";
-import { NO_USAGE, num, type ApiAdapter, type StreamTransformer, type Usage } from "./adapter.js";
+import { MAX_COLLECTED_ANSWER, NO_USAGE, num, type ApiAdapter, type StreamTransformer, type Usage } from "./adapter.js";
 import type { SseEvent } from "./sse.js";
 
 const ATTACHMENT_PARTS = new Set(["image_url", "input_audio", "file"]);
@@ -191,15 +191,26 @@ class OpenAIStream implements StreamTransformer {
    *   the client did not ask, we remove that extra event before passing the
    *   stream on, so the client sees exactly what it expects.
    */
+  private collected = "";
+
   constructor(
     private readonly masker: Masker,
     private readonly clientWantsUsage: boolean,
+    private readonly collectAnswer: boolean,
   ) {
     this.placeholders = masker.map.placeholders();
   }
 
   usage(): Usage {
     return this.current;
+  }
+
+  collectedText(): string {
+    return this.collected;
+  }
+
+  private collect(piece: string): void {
+    if (this.collectAnswer && this.collected.length < MAX_COLLECTED_ANSWER) this.collected += piece;
   }
 
   private restorer(key: string, json: boolean): StreamRestorer {
@@ -242,6 +253,7 @@ class OpenAIStream implements StreamTransformer {
       if (delta) {
         for (const field of ["content", "refusal"] as const) {
           if (typeof delta[field] === "string") {
+            this.collect(delta[field]);
             delta[field] = this.restorer(`${ci}:${field}`, false).push(delta[field]);
           }
         }
@@ -250,16 +262,19 @@ class OpenAIStream implements StreamTransformer {
             if (!isObject(tc) || !isObject(tc.function)) continue;
             if (typeof tc.function.arguments === "string") {
               const ti = num(tc.index) ?? 0;
+              this.collect(tc.function.arguments);
               tc.function.arguments = this.restorer(`${ci}:tool:${ti}`, true).push(tc.function.arguments);
             }
           }
         }
         if (isObject(delta.function_call) && typeof delta.function_call.arguments === "string") {
+          this.collect(delta.function_call.arguments);
           delta.function_call.arguments = this.restorer(`${ci}:fn`, true).push(delta.function_call.arguments);
         }
       }
 
       if (finished) {
+        this.collect("\n");
         // This choice is done: release anything still held back, in this same event.
         const target = delta ?? {};
         if (!delta) choice.delta = target;
@@ -358,10 +373,27 @@ export const openaiAdapter: ApiAdapter = {
 
   usageFromResponse: (json) => (isObject(json) ? readUsage(json.usage, NO_USAGE) : NO_USAGE),
 
-  createStreamTransformer(masker, originalBody) {
+  answerTexts(json) {
+    const out: string[] = [];
+    if (!isObject(json) || !Array.isArray(json.choices)) return out;
+    for (const choice of json.choices) {
+      const message = isObject(choice) && isObject(choice.message) ? choice.message : null;
+      if (!message) continue;
+      if (typeof message.content === "string") out.push(message.content);
+      if (typeof message.refusal === "string") out.push(message.refusal);
+      if (Array.isArray(message.tool_calls)) {
+        for (const tc of message.tool_calls) {
+          if (isObject(tc) && isObject(tc.function) && typeof tc.function.arguments === "string") out.push(tc.function.arguments);
+        }
+      }
+    }
+    return out;
+  },
+
+  createStreamTransformer(masker, originalBody, collectAnswer) {
     const options = originalBody.stream_options;
     const wantsUsage = isObject(options) && options.include_usage === true;
-    return new OpenAIStream(masker, wantsUsage);
+    return new OpenAIStream(masker, wantsUsage, collectAnswer);
   },
 
   errorBody,

@@ -34,7 +34,16 @@ export interface StreamTransformer {
   /** The provider's stream ended; release anything still held back. */
   finish(): SseEvent[];
   usage(): Usage;
+  /**
+   * The answer's text exactly as the PROVIDER sent it (placeholders not yet
+   * restored), for the optional "new personal data in the answer" scan.
+   * Capped in size; empty unless collection was switched on.
+   */
+  collectedText(): string;
 }
+
+/** The most answer text kept for scanning a streamed answer (1 MB). */
+export const MAX_COLLECTED_ANSWER = 1024 * 1024;
 
 export interface ApiAdapter {
   name: "anthropic" | "openai";
@@ -57,7 +66,10 @@ export interface ApiAdapter {
   /** Put real values back into a complete (non-streamed) answer. */
   restoreResponse(json: unknown, masker: Masker): unknown;
   usageFromResponse(json: unknown): Usage;
-  createStreamTransformer(masker: Masker, originalBody: Record<string, unknown>): StreamTransformer;
+  /** The pieces of text the AI wrote in a complete answer (before restoring), for the answer scan. */
+  answerTexts(json: unknown): string[];
+  /** @param collectAnswer keep the un-restored answer text so it can be scanned at the end */
+  createStreamTransformer(masker: Masker, originalBody: Record<string, unknown>, collectAnswer: boolean): StreamTransformer;
 
   /** The error body in this provider's style, so client libraries understand it. */
   errorBody(err: GuardError, requestId: string): unknown;

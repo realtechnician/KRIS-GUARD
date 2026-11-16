@@ -4,7 +4,7 @@
 |---|---|
 | Step 0: threat model and plan | Done |
 | **Phase 1: core proxy, personal-data protection, audit log** | **Done, waiting for your OK** |
-| Phase 2: client policies, planted-instruction screening, cost, rate limits | **Partly done**: screening (item 9, first half) is built and tested. Everything else is not started. |
+| Phase 2: client policies, planted-instruction screening, cost, rate limits | **Partly done**: item 9 (screening and the answer scan) is built and tested. Items 7, 8 and 10 are not started. |
 | Phase 3: admin page, `/health` report, LEARN.md | Not started |
 
 ---
@@ -34,8 +34,8 @@
 
 ### Tests
 
-`npm test`: **244 passing** (162 at the end of Phase 1, plus 82 for the
-screening module), all offline against a fake provider. 2 more (PostgreSQL)
+`npm test`: **250 passing** (162 at the end of Phase 1, plus 88 for item 9),
+all offline against a fake provider. 2 more (PostgreSQL)
 are skipped unless a PostgreSQL server is supplied; they pass when one is.
 
 | Your test requirement | Test file | Result |
@@ -153,7 +153,7 @@ finished phase.**
 | 9 | Planted-instruction screening, rule-based, replaceable module | Done: `src/injection/detector.ts` (the interface and warn/strip/block), `src/injection/rules.ts` (the rules) |
 | 9 | Per client: warn, strip or block | Done: `injection_screening` in the policy file; default `warn` |
 | 9 | Applied to documents, emails, web pages, tool results | Done: marked in `src/proxy/anthropic.ts` and `openai.ts` with `untrusted(...)` |
-| 9 | Optional scan of the answer for new personal data | **Not started** |
+| 9 | Optional scan of the answer for new personal data | Done: `personal_data.scan_answers` in the policy (default off); `newPiiIn` in `src/proxy/handler.ts` |
 | 7 | Allowed models, spending limit, max size, blocked words, action on personal data, attachments, "may leave Rwanda" | Attachments only (Phase 1). **The rest not started** |
 | 8 | Price table and cost | **Not started** |
 | 10 | Rate limiting, timeouts, retries, error wording | A provider timeout exists (Phase 1). **The rest not started** |
@@ -163,7 +163,14 @@ business sentences not flagged, the three actions, speed on hostile input)
 and `test/injection-proxy.test.ts` (end to end, both APIs, which text is and
 is not screened, nothing sensitive recorded, a crashing detector blocks).
 
+`test/answer-scan.test.ts` covers the answer scan: new data flagged (plain,
+tool calls, streamed and split across chunks), request data not flagged, off
+by default, only the KINDS recorded.
+
 Things to know:
+- The answer scan flags; it does not change or block the answer. For a
+  streamed answer the flag is in the audit log only (the headers have already
+  been sent by then).
 - The Kinyarwanda rule is marked [VERIFY]; I am not confident of the wording.
 - The default is `warn`, so existing clients keep working and get flagged.
 - The system prompt and tool definitions are never screened (the client's
@@ -242,11 +249,7 @@ re-deriving these. Each point is something that is easy to get subtly wrong.
 - Log and audit rule ids and counts only. The matched text may be personal data.
 - The "strip" marker must not itself trigger a detector.
 
-**Scan of the answer for new personal data**
-- Run `masker.find()` on the answer BEFORE restoring. Request data appears
-  there only as placeholders, so anything detected is new by construction.
-- Streaming: collect each block's un-restored text (cap the size), scan at
-  the end. It can only be flagged, not taken back.
+**Scan of the answer for new personal data**: done (see "Phase 2 so far").
 
 **Rate limits, timeouts, retries**
 - Token bucket per key id, in memory. Also limit failed-key attempts per IP

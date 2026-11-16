@@ -205,6 +205,9 @@ personal_data:
     - Uwase
   # random (default) or stable. See "Honest limits".
   placeholders: random
+  # Also check the AI's answer for personal data that was NOT in the request.
+  # Flagged in the audit log and a response header; the answer is not changed.
+  scan_answers: false
 
 injection_screening:
   # Text from documents, emails, web pages and tool results is checked for
